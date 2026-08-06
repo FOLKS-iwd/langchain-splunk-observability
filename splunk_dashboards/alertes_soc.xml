@@ -1,0 +1,154 @@
+<dashboard version="1.1">
+  <label>Alertes SOC - LLM Security</label>
+  <description>Detection d'anomalies et patterns suspects sur les appels LLM</description>
+
+  <fieldset submitButton="false">
+    <input type="time" token="time_range">
+      <label>Periode</label>
+      <default>
+        <earliest>-24h@h</earliest>
+        <latest>now</latest>
+      </default>
+    </input>
+  </fieldset>
+
+  <row>
+    <panel>
+      <title>Pics anormaux de consommation de tokens (> 2 ecarts-types)</title>
+      <chart>
+        <search>
+          <query>index=llm_observability sourcetype=langchain_events event_type=query
+| bin _time span=10m
+| stats sum(total_tokens) as tokens_10m by _time
+| eventstats avg(tokens_10m) as mean stdev(tokens_10m) as sd
+| eval upper_bound=mean+(2*sd)
+| eval is_anomaly=if(tokens_10m > upper_bound, 1, 0)
+| eval threshold=upper_bound
+| fields _time tokens_10m threshold is_anomaly</query>
+          <earliest>$time_range.earliest$</earliest>
+          <latest>$time_range.latest$</latest>
+        </search>
+        <option name="charting.chart">line</option>
+        <option name="charting.axisTitleY.text">Tokens / 10min</option>
+        <option name="charting.legend.placement">bottom</option>
+      </chart>
+    </panel>
+    <panel>
+      <title>Fenetres en anomalie</title>
+      <table>
+        <search>
+          <query>index=llm_observability sourcetype=langchain_events event_type=query
+| bin _time span=10m
+| stats sum(total_tokens) as tokens count as requests by _time
+| eventstats avg(tokens) as mean stdev(tokens) as sd
+| eval upper=mean+(2*sd)
+| where tokens > upper
+| eval deviation=round((tokens - mean) / sd, 2)
+| sort - tokens
+| rename _time as "Fenetre" tokens as "Tokens" requests as "Requetes" deviation as "Ecart (sigma)"
+| head 20</query>
+          <earliest>$time_range.earliest$</earliest>
+          <latest>$time_range.latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>Taux d'erreur par fenetre de 5 min (seuil: 20%)</title>
+      <chart>
+        <search>
+          <query>index=llm_observability sourcetype=langchain_events
+| bin _time span=5m
+| stats count(eval(status="error")) as errors count as total by _time
+| eval error_pct=round(errors/total*100, 2)
+| eval seuil=20
+| fields _time error_pct seuil</query>
+          <earliest>$time_range.earliest$</earliest>
+          <latest>$time_range.latest$</latest>
+        </search>
+        <option name="charting.chart">line</option>
+        <option name="charting.axisTitleY.text">Taux d'erreur (%)</option>
+        <option name="charting.fieldColors">{"error_pct": 0xdc4e41, "seuil": 0xf8be34}</option>
+      </chart>
+    </panel>
+    <panel>
+      <title>Depassements du seuil d'erreur</title>
+      <single>
+        <search>
+          <query>index=llm_observability sourcetype=langchain_events
+| bin _time span=5m
+| stats count(eval(status="error")) as errors count as total by _time
+| eval error_pct=round(errors/total*100, 2)
+| where error_pct > 20
+| stats count as breaches</query>
+          <earliest>$time_range.earliest$</earliest>
+          <latest>$time_range.latest$</latest>
+        </search>
+        <option name="rangeColors">["0x53a051","0xf8be34","0xdc4e41"]</option>
+        <option name="rangeValues">[0,3]</option>
+        <option name="useColors">1</option>
+        <option name="underLabel">periodes en depassement</option>
+      </single>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>Detection de prompt injection (patterns suspects)</title>
+      <table>
+        <search>
+          <query>index=llm_observability sourcetype=langchain_events event_type=query
+| regex query_text="(?i)(ignore\s+(previous|all|above)\s+(instructions?|prompts?|rules?)|you\s+are\s+now|act\s+as\s+(if|a|an)|system\s*:\s*|do\s+not\s+follow|disregard\s+(previous|all|your)|pretend\s+you|forget\s+(everything|all|previous)|new\s+instructions?:|override\s+(previous|system)|jailbreak|DAN\s+mode|\[INST\]|\<\|im_start\|\>)"
+| table _time query_text status model_name total_tokens
+| sort - _time
+| head 50
+| rename _time as "Timestamp" query_text as "Requete suspecte" status as "Statut" model_name as "Modele" total_tokens as "Tokens"</query>
+          <earliest>$time_range.earliest$</earliest>
+          <latest>$time_range.latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="count">20</option>
+      </table>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>Volume de requetes suspectes dans le temps</title>
+      <chart>
+        <search>
+          <query>index=llm_observability sourcetype=langchain_events event_type=query
+| eval is_suspicious=if(match(query_text, "(?i)(ignore\s+(previous|all|above)\s+(instructions?|prompts?)|you\s+are\s+now|act\s+as\s+|system\s*:\s*|disregard|pretend\s+you|forget\s+(everything|all)|override|jailbreak|DAN\s+mode)"), 1, 0)
+| timechart span=1h sum(is_suspicious) as "Requetes suspectes" count as "Total requetes"</query>
+          <earliest>$time_range.earliest$</earliest>
+          <latest>$time_range.latest$</latest>
+        </search>
+        <option name="charting.chart">column</option>
+        <option name="charting.chart.overlayFields">Total requetes</option>
+        <option name="charting.fieldColors">{"Requetes suspectes": 0xdc4e41, "Total requetes": 0x5379af}</option>
+      </chart>
+    </panel>
+    <panel>
+      <title>Requetes a forte consommation de tokens (potentiel abus)</title>
+      <table>
+        <search>
+          <query>index=llm_observability sourcetype=langchain_events event_type=query
+| eventstats avg(total_tokens) as avg_tokens stdev(total_tokens) as sd_tokens
+| eval seuil=avg_tokens+(3*sd_tokens)
+| where total_tokens > seuil
+| table _time query_text total_tokens model_name latency_ms
+| sort - total_tokens
+| head 20
+| rename _time as "Timestamp" query_text as "Requete" total_tokens as "Tokens" model_name as "Modele" latency_ms as "Latence (ms)"</query>
+          <earliest>$time_range.earliest$</earliest>
+          <latest>$time_range.latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+  </row>
+
+</dashboard>

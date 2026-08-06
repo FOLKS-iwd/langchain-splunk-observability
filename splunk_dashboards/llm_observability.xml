@@ -1,0 +1,125 @@
+<dashboard version="1.1">
+  <label>LLM Observability - LangChain RAG</label>
+  <description>Supervision des appels LLM, consommation de tokens et latence</description>
+
+  <fieldset submitButton="false">
+    <input type="time" token="time_range">
+      <label>Periode</label>
+      <default>
+        <earliest>-24h@h</earliest>
+        <latest>now</latest>
+      </default>
+    </input>
+    <input type="dropdown" token="model_filter">
+      <label>Modele</label>
+      <choice value="*">Tous</choice>
+      <default>*</default>
+      <search>
+        <query>index=llm_observability sourcetype=langchain_events event_type=query | dedup model_name | table model_name</query>
+        <earliest>-7d@d</earliest>
+        <latest>now</latest>
+      </search>
+      <fieldForLabel>model_name</fieldForLabel>
+      <fieldForValue>model_name</fieldForValue>
+    </input>
+  </fieldset>
+
+  <row>
+    <panel>
+      <title>Tokens consommes dans le temps</title>
+      <chart>
+        <search>
+          <query>index=llm_observability sourcetype=langchain_events event_type=query model_name=$model_filter$
+| timechart span=1h sum(prompt_tokens) as "Prompt" sum(completion_tokens) as "Completion" sum(total_tokens) as "Total"</query>
+          <earliest>$time_range.earliest$</earliest>
+          <latest>$time_range.latest$</latest>
+        </search>
+        <option name="charting.chart">area</option>
+        <option name="charting.chart.stackMode">stacked</option>
+        <option name="charting.axisTitleX.text">Temps</option>
+        <option name="charting.axisTitleY.text">Tokens</option>
+      </chart>
+    </panel>
+    <panel>
+      <title>Latence moyenne (ms)</title>
+      <chart>
+        <search>
+          <query>index=llm_observability sourcetype=langchain_events event_type=query model_name=$model_filter$
+| timechart span=1h avg(latency_ms) as "Latence moyenne" p95(latency_ms) as "P95"</query>
+          <earliest>$time_range.earliest$</earliest>
+          <latest>$time_range.latest$</latest>
+        </search>
+        <option name="charting.chart">line</option>
+        <option name="charting.axisTitleY.text">ms</option>
+      </chart>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>Taux d'erreur</title>
+      <single>
+        <search>
+          <query>index=llm_observability sourcetype=langchain_events
+| stats count(eval(status="error")) as errors count as total
+| eval error_rate=round(errors/total*100, 2)
+| fields error_rate</query>
+          <earliest>$time_range.earliest$</earliest>
+          <latest>$time_range.latest$</latest>
+        </search>
+        <option name="numberPrecision">0.00</option>
+        <option name="unit">%</option>
+        <option name="rangeColors">["0x53a051","0xf8be34","0xdc4e41"]</option>
+        <option name="rangeValues">[2,10]</option>
+        <option name="useColors">1</option>
+      </single>
+    </panel>
+    <panel>
+      <title>Erreurs dans le temps</title>
+      <chart>
+        <search>
+          <query>index=llm_observability sourcetype=langchain_events event_type=error
+| timechart span=1h count as "Erreurs"</query>
+          <earliest>$time_range.earliest$</earliest>
+          <latest>$time_range.latest$</latest>
+        </search>
+        <option name="charting.chart">column</option>
+        <option name="charting.fieldColors">{"Erreurs": 0xdc4e41}</option>
+      </chart>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>Top 20 requetes</title>
+      <table>
+        <search>
+          <query>index=llm_observability sourcetype=langchain_events event_type=query model_name=$model_filter$
+| stats count avg(latency_ms) as avg_latency avg(total_tokens) as avg_tokens by query_text
+| sort - count
+| head 20
+| rename query_text as "Requete" count as "Occurrences" avg_latency as "Latence moy. (ms)" avg_tokens as "Tokens moy."
+| fieldformat "Latence moy. (ms)"=round('Latence moy. (ms)', 1)
+| fieldformat "Tokens moy."=round('Tokens moy.', 0)</query>
+          <earliest>$time_range.earliest$</earliest>
+          <latest>$time_range.latest$</latest>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="count">20</option>
+      </table>
+    </panel>
+    <panel>
+      <title>Repartition par modele</title>
+      <chart>
+        <search>
+          <query>index=llm_observability sourcetype=langchain_events event_type=query
+| stats count by model_name</query>
+          <earliest>$time_range.earliest$</earliest>
+          <latest>$time_range.latest$</latest>
+        </search>
+        <option name="charting.chart">pie</option>
+      </chart>
+    </panel>
+  </row>
+
+</dashboard>
